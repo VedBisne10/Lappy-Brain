@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from backend.config import settings
 from backend.api.routes.health import router as health_check
+from backend.api.routes.chat import router as ChatRequest
 
 app = FastAPI(
     title = settings.app_name,
@@ -18,4 +19,5 @@ def root():
     }
 
 app.include_router(health_check)
+app.include_router(ChatRequest)
 
