@@ -4,3 +4,4 @@ pydantic-settings
 httpx
 pypdf
 python-docx
+openpyxl
