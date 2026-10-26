@@ -1,10 +1,9 @@
-
 from typing import List
 
 
-def remove_duplicate_overlap(
+def chunking(
     chunks: List[str],
-    max_words_to_check: int = 20,
+    chunk_size: int = 200,
 ) -> List[str]:
     """
     Remove repeated words at the boundaries of consecutive text chunks.
@@ -21,7 +20,7 @@ def remove_duplicate_overlap(
         A new list of chunks with duplicated boundary text removed.
     """
     # Validate the limit so the comparison loop always has a useful range.
-    if max_words_to_check <= 0:
+    if chunk_size <= 0:
         raise ValueError("max_words_to_check must be greater than zero.")
 
     cleaned_chunks = []
@@ -41,7 +40,7 @@ def remove_duplicate_overlap(
             max_overlap = min(
                 len(previous_words),
                 len(current_words),
-                max_words_to_check,
+                chunk_size,
             )
 
             duplicate_count = 0

@@ -5,3 +5,4 @@ httpx
 pypdf
 python-docx
 openpyxl
+pytest
