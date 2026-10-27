@@ -6,3 +6,5 @@ pypdf
 python-docx
 openpyxl
 pytest
+sentence-transformers
+qdrant-client
