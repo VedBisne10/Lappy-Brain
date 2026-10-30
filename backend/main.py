@@ -3,6 +3,7 @@ from backend.config import settings
 from backend.api.routes.health import router as health_check
 from backend.api.routes.chat import router as ChatRequest
 from backend.api.routes.knowledge import router as knowledge_router
+from backend.api.routes.files import router as files_router
 
 # Create the main FastAPI app using settings loaded from the config
 app = FastAPI(
@@ -25,3 +26,4 @@ def root():
 app.include_router(health_check)
 app.include_router(ChatRequest)
 app.include_router(knowledge_router)
+app.include_router(files_router)
