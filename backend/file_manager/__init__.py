@@ -11,9 +11,19 @@ from backend.file_manager.folder_scanner import (
     scan_folder,
     search_filesystem,
 )
+from backend.file_manager.file_operations import (
+    create_folder,
+    create_file,
+    rename_path,
+    move_path,
+    list_directory,
+    delete_path,
+)
+
 from backend.file_manager.file_reader import read_text_file
 from backend.file_manager.folder_scanner import scan_folder, search_filesystem
 from backend.file_manager.metadata_extractor import extract_metadata
+
 
 
 __all__ = [
@@ -25,6 +35,12 @@ __all__ = [
     "read_text_file",
     "create_file_snapshot",
     "compare_snapshots",
+    "create_folder",
+    "create_file",
+    "rename_path",
+    "move_path",
+    "list_directory",
+    "delete_path",
 ]
 
 
