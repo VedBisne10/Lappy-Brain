@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     # Local Ollama connection settings.
     ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "gemma3:12b"
+    ollama_model: str = "qwen3.5:9b"
 
     # Persistent application storage.
     storage_dir: Path = PROJECT_ROOT / "storage"
