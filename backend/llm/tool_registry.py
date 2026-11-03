@@ -1,6 +1,9 @@
+
+from pathlib import Path
 from typing import Any
 
 from backend.config.settings import settings
+
 from backend.file_manager.file_operations import (
     create_folder,
     create_file,
@@ -8,7 +11,9 @@ from backend.file_manager.file_operations import (
     move_path,
     list_directory,
 )
+
 from backend.file_manager.folder_scanner import search_filesystem
+from backend.file_manager.file_reader import read_text_file
 
 
 # Tools exposed to the Ollama model.
@@ -37,6 +42,28 @@ TOOL_DEFINITIONS = [
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": (
+                "Read the contents of an existing supported text or "
+                "code file using its absolute path. Use this after "
+                "search_filesystem when the user wants to understand "
+                "or analyze a file. Do not use this for binary files."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute path of the file to read.",
+                    },
+                },
+                "required": ["file_path"],
             },
         },
     },
@@ -138,6 +165,7 @@ class ToolRegistry:
 
         self._tools = {
             "search_filesystem": self._search_filesystem,
+            "read_file": self._read_file,
             "list_directory": self._list_directory,
             "create_folder": self._create_folder,
             "create_file": self._create_file,
@@ -230,6 +258,60 @@ class ToolRegistry:
         return {
             "result_count": len(results),
             "results": results,
+        }
+
+    def _read_file(self, arguments: dict) -> dict:
+        """Read a supported file inside an authorized drive."""
+
+        self._validate_arguments(
+            arguments,
+            {"file_path"},
+            {"file_path"},
+        )
+
+        file_path = Path(
+            self._require_string(arguments["file_path"], "file_path")
+        )
+
+        if not file_path.is_absolute():
+            raise ValueError("An absolute file path is required.")
+
+        # Resolve the path and verify that it belongs to an
+        # authorized root before passing it to the file reader.
+        resolved_path = file_path.resolve(strict=True)
+
+        allowed_root = None
+
+        for root in settings.file_search_roots:
+            resolved_root = Path(root).resolve()
+
+            try:
+                resolved_path.relative_to(resolved_root)
+                allowed_root = resolved_root
+                break
+            except ValueError:
+                continue
+
+        if allowed_root is None:
+            raise PermissionError(
+                "The requested file is outside authorized locations."
+            )
+
+        if not resolved_path.is_file():
+            raise ValueError("The requested path is not a file.")
+
+        content = read_text_file(
+            file_path=str(resolved_path),
+            allowed_root=str(allowed_root),
+        )
+
+        if not isinstance(content, str):
+            raise ValueError("The file reader returned invalid content.")
+
+        return {
+            "file_path": str(resolved_path),
+            "content": content,
+            "character_count": len(content),
         }
 
     def _list_directory(self, arguments: dict) -> dict:

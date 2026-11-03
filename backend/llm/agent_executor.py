@@ -1,3 +1,4 @@
+
 import json
 from typing import Any
 
@@ -12,18 +13,39 @@ SYSTEM_PROMPT = """
 You are LappyBrain, a personal AI computer assistant.
 
 Your responsibility is to understand user instructions and use
-the available tools to complete tasks on their computer.
+the available tools to complete tasks on the user's computer.
 
-RULES:
+GENERAL RULES:
 1. Use tools whenever a task requires filesystem information or action.
 2. Never claim an operation succeeded unless its tool result confirms success.
 3. Use the exact arguments required by each tool.
-4. If a search returns no results, clearly report that.
-5. Do not invent file paths, folder names, or execution results.
-6. If information is missing, ask the user instead of guessing.
-7. Never attempt to bypass filesystem permissions.
-8. Do not claim to have executed operations that you did not execute.
-9. Explain the actual result after completing the requested task.
+4. Never invent file paths, folder names, or execution results.
+5. Never bypass filesystem permissions.
+6. Never claim to have executed an operation you did not execute.
+7. Explain the actual result after completing the task.
+
+FILE SEARCH AND READING WORKFLOW:
+1. When searching for a file, use search_filesystem with a specific filename.
+2. Do not repeatedly search for the same file using the same query.
+3. You may perform a second, more specific search if the first search
+   does not find a suitable result.
+4. If search_filesystem returns the exact file, use its returned path.
+5. If the user asks to read or understand a file, call read_file
+   using the exact path returned by search_filesystem.
+6. Do not call search_filesystem again when you already have the
+   exact path needed to read the file.
+7. After read_file succeeds, use its content to answer the user.
+8. If multiple matching files exist, ask the user to clarify when
+   you cannot confidently identify the intended file.
+9. Never invent a path to call read_file.
+
+TOOL EXECUTION:
+1. Read the results returned by every tool before choosing the next action.
+2. Do not repeat an identical tool call.
+3. Do not call list_directory if the search results already provide
+   the exact file path required.
+4. Do not perform unrelated operations.
+5. If a tool fails, explain the failure instead of pretending it succeeded.
 
 You have access only to the tools explicitly provided to you.
 """
@@ -70,10 +92,11 @@ class AgentExecutor:
         ]
 
         execution_history = []
+        executed_calls = set()
+        search_call_count = 0
 
         for round_number in range(1, self.max_tool_rounds + 1):
 
-            # Ask Qwen to respond or request a tool.
             response = await ollama_client.generate_with_tools(
                 messages=messages,
                 tools=TOOL_DEFINITIONS,
@@ -82,7 +105,7 @@ class AgentExecutor:
             tool_calls = response.get("tool_calls", [])
             content = response.get("content", "")
 
-            # No more tool calls means the model has finished.
+            # The model has finished its work.
             if not tool_calls:
                 return {
                     "success": True,
@@ -92,14 +115,13 @@ class AgentExecutor:
                     "execution_history": execution_history,
                 }
 
-            # Preserve the assistant's tool-call message in conversation.
+            # Preserve the assistant's tool-call message.
             messages.append({
                 "role": "assistant",
                 "content": content or "",
                 "tool_calls": tool_calls,
             })
 
-            # Execute every requested tool.
             for tool_call in tool_calls:
 
                 function_data = tool_call.get("function", {})
@@ -108,20 +130,61 @@ class AgentExecutor:
                 raw_arguments = function_data.get("arguments", {})
 
                 if not isinstance(tool_name, str) or not tool_name:
+                    tool_name = "unknown"
                     tool_result = {
                         "success": False,
                         "error": "The model returned an invalid tool name.",
                     }
-                    tool_name = "unknown"
 
                 else:
                     try:
                         arguments = self._parse_arguments(raw_arguments)
 
-                        tool_result = tool_registry.execute(
-                            tool_name=tool_name,
-                            arguments=arguments,
+                        # Create a consistent identifier for this call.
+                        call_signature = (
+                            tool_name,
+                            json.dumps(
+                                arguments,
+                                sort_keys=True,
+                                ensure_ascii=False,
+                            ),
                         )
+
+                        # Prevent identical tool calls from repeating.
+                        if call_signature in executed_calls:
+                            tool_result = {
+                                "success": False,
+                                "tool": tool_name,
+                                "error": (
+                                    "This exact tool call was already executed. "
+                                    "Use its previous result instead of "
+                                    "repeating the operation."
+                                ),
+                            }
+
+                        # Allow at most two searches per instruction.
+                        elif tool_name == "search_filesystem" and search_call_count >= 2:
+                            tool_result = {
+                                "success": False,
+                                "tool": tool_name,
+                                "error": (
+                                    "The search limit for this instruction "
+                                    "has been reached. Use the previous "
+                                    "search results or ask the user for "
+                                    "a more specific filename."
+                                ),
+                            }
+
+                        else:
+                            executed_calls.add(call_signature)
+
+                            if tool_name == "search_filesystem":
+                                search_call_count += 1
+
+                            tool_result = tool_registry.execute(
+                                tool_name=tool_name,
+                                arguments=arguments,
+                            )
 
                     except (ValueError, TypeError) as exc:
                         tool_result = {
