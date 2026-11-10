@@ -1,4 +1,3 @@
-
 import os
 from collections import deque
 from pathlib import Path
@@ -32,6 +31,45 @@ DEEP_SEARCH_DIRECTORIES = {
     "tmp",
 }
 
+# Project indicators used for automatic project discovery.
+PROJECT_MARKERS = {
+    ".git",
+    "pyproject.toml",
+    "package.json",
+    "requirements.txt",
+    "pom.xml",
+    "cargo.toml",
+    "go.mod",
+    "composer.json",
+    "build.gradle",
+    "build.gradle.kts",
+    "setup.py",
+    "manage.py",
+    "README.md",
+    ".gitignore",
+}
+
+# Common personal folders.
+PERSONAL_DIRECTORY_NAMES = (
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Pictures",
+    "Videos",
+    "Music",
+    "OneDrive",
+)
+
+# Common development workspace names.
+DEVELOPMENT_DIRECTORY_NAMES = (
+    "Projects",
+    "Development",
+    "Workspace",
+    "Workspaces",
+    "Code",
+    "Repositories",
+    "GitHub",
+)
 
 def _is_link_or_junction(path: Path) -> bool:
     """Identify symbolic links and Windows junctions."""
@@ -296,6 +334,247 @@ def _search_pass(
     return exact_results, partial_results
 
 
+# Avoid scanning too deeply just to discover project markers.
+PROJECT_DISCOVERY_MAX_DEPTH = 4
+
+
+def _is_authorized_path(path: Path, allowed_roots: list[str | Path]) -> bool:
+    """Check whether a path is inside one of the authorized drive roots."""
+
+    try:
+        resolved_path = path.resolve(strict=True)
+
+        for allowed_root in allowed_roots:
+            try:
+                resolved_root = Path(allowed_root).resolve(strict=True)
+
+                if resolved_path.is_relative_to(resolved_root):
+                    return True
+
+            except (OSError, RuntimeError):
+                continue
+
+    except (OSError, RuntimeError):
+        return False
+
+    return False
+
+
+def _discover_personal_roots(
+    search_roots: list[str | Path],
+) -> list[Path]:
+    """Discover common personal directories without exceeding allowed roots."""
+
+    home = Path.home()
+
+    candidates = [
+        home / name for name in PERSONAL_DIRECTORY_NAMES
+    ]
+
+    # OneDrive may use a different location or environment variable.
+    for variable in (
+        "OneDrive",
+        "OneDriveCommercial",
+        "OneDriveConsumer",
+    ):
+        value = os.environ.get(variable)
+
+        if value:
+            candidates.append(Path(value).expanduser())
+
+    discovered = []
+    seen = set()
+
+    for candidate in candidates:
+        if _is_link_or_junction(candidate):
+            continue
+
+        if not _is_authorized_path(candidate, search_roots):
+            continue
+
+        try:
+            resolved = candidate.resolve(strict=True)
+
+            if not resolved.is_dir():
+                continue
+
+            key = os.path.normcase(str(resolved))
+
+            if key not in seen:
+                seen.add(key)
+                discovered.append(resolved)
+
+        except (OSError, RuntimeError):
+            continue
+
+    return discovered
+
+
+def _discover_development_roots(
+    search_roots: list[str | Path],
+) -> list[Path]:
+    """Discover common development workspace directories."""
+
+    candidates = [
+        Path.home() / name
+        for name in DEVELOPMENT_DIRECTORY_NAMES
+    ]
+
+    discovered = []
+    seen = set()
+
+    for candidate in candidates:
+        if _is_link_or_junction(candidate):
+            continue
+
+        if not _is_authorized_path(candidate, search_roots):
+            continue
+
+        try:
+            resolved = candidate.resolve(strict=True)
+
+            if not resolved.is_dir():
+                continue
+
+            key = os.path.normcase(str(resolved))
+
+            if key not in seen:
+                seen.add(key)
+                discovered.append(resolved)
+
+        except (OSError, RuntimeError):
+            continue
+
+    return discovered
+
+
+def _contains_project_marker(directory: Path) -> bool:
+    """Determine whether a directory looks like a development project."""
+
+    try:
+        for marker in PROJECT_MARKERS:
+            marker_path = directory / marker
+
+            if marker_path.exists():
+                return True
+
+    except OSError:
+        return False
+
+    return False
+
+
+def _discover_project_roots(
+    discovery_roots: list[Path],
+) -> list[Path]:
+    """
+    Discover project directories using common project markers.
+
+    Discovery is depth-limited and skips generated/system directories.
+    """
+
+    projects = []
+    seen = set()
+
+    for scan_root in discovery_roots:
+        if _is_link_or_junction(scan_root):
+            continue
+
+        try:
+            if not scan_root.is_dir():
+                continue
+
+            for current_path, directories, _ in os.walk(
+                scan_root,
+                followlinks=False,
+                onerror=lambda error: None,
+            ):
+                current = Path(current_path)
+
+                try:
+                    depth = len(current.relative_to(scan_root).parts)
+                except ValueError:
+                    directories[:] = []
+                    continue
+
+                # Never descend through links, junctions or generated folders.
+                directories[:] =  sorted(
+                    (
+                        name
+                        for name in directories
+                        if (
+                            not _is_link_or_junction(current / name)
+                            and name.casefold() not in DEEP_SEARCH_DIRECTORIES
+                        )
+                    ),
+                    key=str.casefold,
+                )
+
+
+                if _contains_project_marker(current):
+                    try:
+                        resolved = current.resolve(strict=True)
+                        key = os.path.normcase(str(resolved))
+
+                        if key not in seen:
+                            seen.add(key)
+                            projects.append(resolved)
+
+                    except (OSError, RuntimeError):
+                        pass
+
+                    # Avoid treating nested folders inside this project
+                    # as separate projects during this discovery pass.
+                    directories[:] = []
+                    continue
+
+                if depth >= PROJECT_DISCOVERY_MAX_DEPTH:
+                    directories[:] = []
+
+        except (OSError, RuntimeError):
+            continue
+
+    return sorted(projects, key=lambda path: str(path).casefold())
+
+
+def _annotate_results(
+    results: list[dict[str, Any]],
+    classification: str,
+    priority: int,
+) -> list[dict[str, Any]]:
+    """Add folder classification information to search results."""
+
+    for result in results:
+        result["classification"] = classification
+        result["priority"] = priority
+
+    return results
+
+
+def _deduplicate_results(
+    results: list[dict[str, Any]],
+    max_results: int,
+) -> list[dict[str, Any]]:
+    """Remove duplicate paths while preserving result priority."""
+
+    unique = []
+    seen = set()
+
+    for result in results:
+        key = os.path.normcase(result["path"])
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        unique.append(result)
+
+        if len(unique) >= max_results:
+            break
+
+    return unique
+
+
 def search_filesystem(
     query: str,
     search_roots: list[str | Path],
@@ -305,21 +584,14 @@ def search_filesystem(
     strategy: str = "bfs",
 ) -> list[dict[str, Any]]:
     """
-    Search files and folders using priority-based searching.
+    Search using automatic folder discovery and classification.
 
-    Pass 1: Normal search.
-        Searches ordinary directories first.
-        If exact matches are found, returns them immediately.
+    Priority 1: Detected development projects.
+    Priority 2: Common personal folders.
+    Priority 3: Other accessible drive locations.
+    Priority 4: Deep search through system/generated directories.
 
-    Pass 2: Deep search.
-        Runs only if normal search finds no exact matches.
-        Includes system, dependency, cache and hidden application
-        directories that were skipped during normal search.
-
-    Exact matches are prioritized over partial matches.
-
-    BFS and DFS traversal are supported.
-    File contents are never opened or read.
+    Exact matches are preferred over partial matches.
     """
 
     query = query.strip().casefold()
@@ -337,10 +609,107 @@ def search_filesystem(
     if strategy not in {"bfs", "dfs"}:
         raise ValueError("Strategy must be either 'bfs' or 'dfs'.")
 
-    # PASS 1: Normal search.
-    normal_exact, normal_partial = _search_pass(
+    # Remove inaccessible and duplicate search roots.
+    authorized_roots = []
+    seen_roots = set()
+
+    for root in search_roots:
+        path = Path(root).expanduser()
+
+        if _is_link_or_junction(path):
+            continue
+
+        try:
+            resolved = path.resolve(strict=True)
+
+            if not resolved.is_dir():
+                continue
+
+            key = os.path.normcase(str(resolved))
+
+            if key not in seen_roots:
+                seen_roots.add(key)
+                authorized_roots.append(resolved)
+
+        except (OSError, RuntimeError):
+            continue
+
+    if not authorized_roots:
+        return []
+
+    # Discover personal and development locations.
+    personal_roots = _discover_personal_roots(authorized_roots)
+
+    development_roots = _discover_development_roots(
+        authorized_roots
+    )
+
+    # Search both personal folders and known development workspaces
+    # when discovering project markers.
+    discovery_roots = list(
+        dict.fromkeys(personal_roots + development_roots)
+    )
+
+    project_roots = _discover_project_roots(discovery_roots)
+    
+    # PRIORITY 1: DEVELOPMENT PROJECTS
+    if project_roots:
+        exact, partial = _search_pass(
+            query=query,
+            search_roots=project_roots,
+            max_results=max_results,
+            search_files=search_files,
+            search_folders=search_folders,
+            strategy=strategy,
+            deep_search=True,
+        )
+
+        if exact:
+            return _annotate_results(
+                exact,
+                classification="project",
+                priority=1,
+            )[:max_results]
+
+        project_partial = _annotate_results(
+            partial,
+            classification="project",
+            priority=1,
+        )
+    else:
+        project_partial = []
+ 
+    # PRIORITY 2: PERSONAL FOLDERS
+    if personal_roots:
+        exact, partial = _search_pass(
+            query=query,
+            search_roots=personal_roots,
+            max_results=max_results,
+            search_files=search_files,
+            search_folders=search_folders,
+            strategy=strategy,
+            deep_search=True,
+        )
+
+        if exact:
+            return _annotate_results(
+                exact,
+                classification="personal",
+                priority=2,
+            )[:max_results]
+
+        personal_partial = _annotate_results(
+            partial,
+            classification="personal",
+            priority=2,
+        )
+    else:
+        personal_partial = []
+
+    # PRIORITY 3: ALL OTHER ACCESSIBLE DRIVE LOCATIONS
+    exact, partial = _search_pass(
         query=query,
-        search_roots=search_roots,
+        search_roots=authorized_roots,
         max_results=max_results,
         search_files=search_files,
         search_folders=search_folders,
@@ -348,16 +717,24 @@ def search_filesystem(
         deep_search=False,
     )
 
-    # Exact matches in normal search are sufficient.
-    # Do not search the remaining deep directories.
-    if normal_exact:
-        return normal_exact[:max_results]
+    if exact:
+        return _annotate_results(
+            exact,
+            classification="ordinary",
+            priority=3,
+        )[:max_results]
 
-    # PASS 2: Deep search, only when normal search
-    # could not find an exact match.
+    ordinary_partial = _annotate_results(
+        partial,
+        classification="ordinary",
+        priority=3,
+    )
+
+    # PRIORITY 4: DEEP SEARCH
+    # Only used when no exact match was found above.
     deep_exact, deep_partial = _search_pass(
         query=query,
-        search_roots=search_roots,
+        search_roots=authorized_roots,
         max_results=max_results,
         search_files=search_files,
         search_folders=search_folders,
@@ -365,19 +742,30 @@ def search_filesystem(
         deep_search=True,
     )
 
-    # If deep search finds exact matches, prioritize them.
     if deep_exact:
-        return deep_exact[:max_results]
+        return _annotate_results(
+            deep_exact,
+            classification="system_or_generated",
+            priority=4,
+        )[:max_results]
 
-    # No exact matches anywhere.
-    # Return the partial matches collected from both passes.
-    combined_partial = normal_partial + deep_partial
-
-    combined_partial.sort(
-        key=lambda item: (
-            item["name"].casefold(),
-            item["path"].casefold(),
-        )
+    deep_partial = _annotate_results(
+        deep_partial,
+        classification="system_or_generated",
+        priority=4,
     )
 
-    return combined_partial[:max_results]
+    # No exact matches found anywhere.
+    # Return partial matches in classification priority order.
+    combined_partial = (
+        project_partial
+        + personal_partial
+        + ordinary_partial
+        + deep_partial
+    )
+
+    return _deduplicate_results(
+        combined_partial,
+        max_results,
+    )
+
